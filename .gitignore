@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and local configuration
+.env/
+
+# Runtime-generated files
+temp_pdfs/
+indexes/
+models/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
