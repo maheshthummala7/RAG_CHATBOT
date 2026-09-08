@@ -1,0 +1,50 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Connect to EC2 via SSH and Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT || 22 }}
+          script_stop: true
+          script: |
+            echo "Connected to EC2 successfully."
+
+            # Determine project directory
+            if [ -n "${{ secrets.EC2_PROJECT_DIR }}" ]; then
+              TARGET_DIR="${{ secrets.EC2_PROJECT_DIR }}"
+            elif [ -d "/home/ubuntu/RAG_CHATBOT" ]; then
+              TARGET_DIR="/home/ubuntu/RAG_CHATBOT"
+            elif [ -d "/home/ec2-user/RAG_CHATBOT" ]; then
+              TARGET_DIR="/home/ec2-user/RAG_CHATBOT"
+            elif [ -d "/home/ubuntu/RAG_CHATBOT/llm-chatbot-rag-main" ]; then
+              TARGET_DIR="/home/ubuntu/RAG_CHATBOT/llm-chatbot-rag-main"
+            elif [ -d "/home/ec2-user/RAG_CHATBOT/llm-chatbot-rag-main" ]; then
+              TARGET_DIR="/home/ec2-user/RAG_CHATBOT/llm-chatbot-rag-main"
+            else
+              echo "ERROR: Could not locate RAG_CHATBOT repository directory on EC2."
+              echo "Please set the EC2_PROJECT_DIR secret in GitHub or check the folder location on EC2."
+              exit 1
+            fi
+
+            echo "Navigating to: $TARGET_DIR"
+            cd "$TARGET_DIR"
+
+            # Ensure deploy.sh is executable and run it
+            chmod +x deploy.sh
+            ./deploy.sh
