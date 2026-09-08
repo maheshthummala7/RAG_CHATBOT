@@ -347,8 +347,9 @@ def render_sources(sources: list[dict]) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def generate_speech_audio(text: str, language_name: str) -> bytes | None:
+def generate_speech_audio_b64(text: str, language_name: str) -> str:
     try:
+        import base64
         import io
         import re
         from gtts import gTTS
@@ -358,7 +359,7 @@ def generate_speech_audio(text: str, language_name: str) -> bytes | None:
         clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)
         clean = re.sub(r"\s+", " ", clean).strip()
         if not clean:
-            return None
+            return ""
 
         gtts_codes = {
             "English": "en",
@@ -382,10 +383,10 @@ def generate_speech_audio(text: str, language_name: str) -> bytes | None:
         tts = gTTS(text=clean, lang=lang_code, slow=False)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
-        return fp.getvalue()
+        return base64.b64encode(fp.getvalue()).decode("ascii")
     except Exception as error:
         logger.warning("gTTS speech generation failed for %s: %s", language_name, error)
-        return None
+        return ""
 
 
 def render_speech_controls(
@@ -393,12 +394,14 @@ def render_speech_controls(
     language_code: str,
     language_name: str,
     control_id: str,
+    audio_b64: str = "",
     autoplay: bool = False,
 ) -> None:
     safe_text = json.dumps(text, ensure_ascii=False).replace("</", "<\\/")
     safe_language = json.dumps(language_code)
     safe_lang_name = json.dumps(language_name)
     safe_control_id = json.dumps(control_id)
+    safe_audio_b64 = json.dumps(audio_b64 or "")
     safe_autoplay = json.dumps(autoplay)
     speech_markup = f"""
         <!DOCTYPE html>
@@ -414,10 +417,10 @@ def render_speech_controls(
             const speechLanguage = {safe_language};
             const speechLangName = {safe_lang_name};
             const controlId = {safe_control_id};
+            const audioB64 = {safe_audio_b64};
             const shouldAutoplay = {safe_autoplay};
             const playBtn = document.getElementById("play-" + controlId);
             let currentAudio = null;
-            let audioQueue = [];
 
             function stopSpeaking() {{
                 if (currentAudio) {{
@@ -428,7 +431,6 @@ def render_speech_controls(
                     }} catch (e) {{}}
                     currentAudio = null;
                 }}
-                audioQueue = [];
                 try {{
                     window.speechSynthesis.cancel();
                 }} catch (e) {{}}
@@ -479,127 +481,69 @@ def render_speech_controls(
             window.addEventListener("unload", stopSpeaking);
             window.addEventListener("pagehide", stopSpeaking);
 
-            let availableVoices = [];
-            function loadVoices() {{
+            function speakWithBrowser() {{
                 try {{
-                    availableVoices = window.speechSynthesis ? (window.speechSynthesis.getVoices() || []) : [];
+                    let synth = (window.top && window.top.speechSynthesis) || window.speechSynthesis;
+                    if (!synth) {{
+                        if (playBtn) playBtn.innerHTML = "Read";
+                        return;
+                    }}
+                    let clean = speechText
+                        .replace(/\\[\\d+\\]/g, '')
+                        .replace(/[*#_`~>]/g, '')
+                        .replace(/\\[([^\\]]+)\\]\\([^)]+\\)/g, '$1')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    if (!clean) {{
+                        if (playBtn) playBtn.innerHTML = "Read";
+                        return;
+                    }}
+                    const utterance = new SpeechSynthesisUtterance(clean);
+                    utterance.lang = speechLanguage || "en-US";
+                    utterance.rate = 0.95;
+                    utterance.onend = function() {{
+                        if (playBtn) playBtn.innerHTML = "Read";
+                    }};
+                    utterance.onerror = function() {{
+                        if (playBtn) playBtn.innerHTML = "Read";
+                    }};
+                    synth.speak(utterance);
                 }} catch (e) {{
-                    availableVoices = [];
-                }}
-            }}
-            loadVoices();
-            if (window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {{
-                window.speechSynthesis.onvoiceschanged = loadVoices;
-            }}
-
-            function findBestVoice(langCode, langName) {{
-                if (!availableVoices || availableVoices.length === 0) {{
-                    loadVoices();
-                }}
-                if (!availableVoices || availableVoices.length === 0) return null;
-
-                const code = (langCode || "").toLowerCase().replace("_", "-");
-                const prefix = code.split("-")[0];
-                const name = (langName || "").toLowerCase();
-
-                let match = availableVoices.find(v => v.lang && v.lang.toLowerCase().replace("_", "-") === code);
-                if (match) return match;
-
-                match = availableVoices.find(v => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(prefix));
-                if (match) return match;
-
-                if (name) {{
-                    match = availableVoices.find(v => v.name && v.name.toLowerCase().includes(name));
-                    if (match) return match;
-                }}
-
-                match = availableVoices.find(v => v.name && v.name.toLowerCase().includes(prefix));
-                if (match) return match;
-
-                return null;
-            }}
-
-            function splitIntoChunks(str, maxLen) {{
-                const sentences = str.match(/[^.!?।\\n]+[.!?।\\n]*/g) || [str];
-                const chunks = [];
-                let curr = "";
-                for (let i = 0; i < sentences.length; i++) {{
-                    const s = sentences[i].trim();
-                    if (!s) continue;
-                    if ((curr + " " + s).length <= maxLen) {{
-                        curr = curr ? (curr + " " + s) : s;
-                    }} else {{
-                        if (curr) chunks.push(curr);
-                        curr = s;
-                    }}
-                }}
-                if (curr) chunks.push(curr);
-                return chunks;
-            }}
-
-            function playAudioQueue(shortCode) {{
-                if (audioQueue.length === 0) {{
                     if (playBtn) playBtn.innerHTML = "Read";
-                    return;
                 }}
-                const chunk = audioQueue.shift();
-                const url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=" + encodeURIComponent(shortCode) + "&q=" + encodeURIComponent(chunk);
-                let AudioConstructor = Audio;
-                try {{
-                    if (window.top && window.top.Audio) {{
-                        AudioConstructor = window.top.Audio;
-                    }}
-                }} catch (e) {{}}
-                currentAudio = new AudioConstructor(url);
-                currentAudio.onended = function() {{
-                    playAudioQueue(shortCode);
-                }};
-                currentAudio.onerror = function() {{
-                    playAudioQueue(shortCode);
-                }};
-                currentAudio.play().catch(function() {{
-                    playAudioQueue(shortCode);
-                }});
             }}
 
             function speakText() {{
                 stopAllGlobalAudio();
                 stopSpeaking();
-                loadVoices();
 
-                let clean = speechText
-                    .replace(/\\[\\d+\\]/g, '')
-                    .replace(/[*#_`~>]/g, '')
-                    .replace(/\\[([^\\]]+)\\]\\([^)]+\\)/g, '$1')
-                    .replace(/\\s+/g, ' ')
-                    .trim();
+                if (playBtn) playBtn.innerHTML = "Reading...";
 
-                if (!clean) return;
-
-                if (playBtn) playBtn.innerHTML = "Speaking...";
-
-                const voice = findBestVoice(speechLanguage, speechLangName);
-                if (voice) {{
-                    const utterance = new SpeechSynthesisUtterance(clean);
-                    utterance.voice = voice;
-                    utterance.lang = voice.lang || speechLanguage;
-                    utterance.rate = 0.95;
-                    window.__currentUtterance = utterance;
-
-                    utterance.onend = function() {{
-                        window.__currentUtterance = null;
-                        if (playBtn) playBtn.innerHTML = "Read";
-                    }};
-                    utterance.onerror = function() {{
-                        window.__currentUtterance = null;
-                        if (playBtn) playBtn.innerHTML = "Read";
-                    }};
-                    window.speechSynthesis.speak(utterance);
-                }} else {{
-                    const shortCode = (speechLanguage || "en").split("-")[0];
-                    audioQueue = splitIntoChunks(clean, 150);
-                    playAudioQueue(shortCode);
+                if (audioB64 && audioB64.length > 50) {{
+                    try {{
+                        let AudioConstructor = Audio;
+                        try {{
+                            if (window.top && window.top.Audio) {{
+                                AudioConstructor = window.top.Audio;
+                            }}
+                        }} catch (e) {{}}
+                        currentAudio = new AudioConstructor("data:audio/mp3;base64," + audioB64);
+                        currentAudio.onended = function() {{
+                            if (playBtn) playBtn.innerHTML = "Read";
+                        }};
+                        currentAudio.onerror = function() {{
+                            speakWithBrowser();
+                        }};
+                        currentAudio.play().catch(function() {{
+                            speakWithBrowser();
+                        }});
+                        return;
+                    }} catch (err) {{
+                        speakWithBrowser();
+                        return;
+                    }}
                 }}
+                speakWithBrowser();
             }}
 
             if (shouldAutoplay) {{
@@ -698,25 +642,15 @@ def render_answer_tools(message: dict, message_index: int, model: ChatModel) -> 
             st.markdown(active_text)
 
         clean_lang_id = active_language.lower().replace(" ", "_")
-        audio_state_key = f"play_audio_{message_index}_{clean_lang_id}"
-
-        btn_col, _ = st.columns([2, 5])
-        if btn_col.button("🔊 Read", key=f"read_btn_{message_index}_{clean_lang_id}"):
-            st.session_state[audio_state_key] = True
-
-        if st.session_state.get(audio_state_key):
-            with st.spinner("Generating clear speech…"):
-                audio_bytes = generate_speech_audio(active_text, active_language)
-            if audio_bytes:
-                st.audio(audio_bytes, format="audio/mp3", autoplay=True)
-            else:
-                render_speech_controls(
-                    active_text,
-                    LANGUAGES.get(active_language, "en-US"),
-                    active_language,
-                    f"answer-{message_index}-{clean_lang_id}",
-                    autoplay=True,
-                )
+        audio_b64 = generate_speech_audio_b64(active_text, active_language)
+        render_speech_controls(
+            active_text,
+            LANGUAGES.get(active_language, "en-US"),
+            active_language,
+            f"answer-{message_index}-{clean_lang_id}",
+            audio_b64=audio_b64,
+            autoplay=False,
+        )
 
 
 def build_or_load_collection(
