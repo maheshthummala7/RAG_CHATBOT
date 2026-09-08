@@ -346,6 +346,48 @@ def render_sources(sources: list[dict]) -> None:
                 st.divider()
 
 
+@st.cache_data(show_spinner=False)
+def generate_speech_audio(text: str, language_name: str) -> bytes | None:
+    try:
+        import io
+        import re
+        from gtts import gTTS
+
+        clean = re.sub(r"\[\d+\]", "", text)
+        clean = re.sub(r"[*#_`~>]", "", clean)
+        clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if not clean:
+            return None
+
+        gtts_codes = {
+            "English": "en",
+            "Hindi": "hi",
+            "Telugu": "te",
+            "Tamil": "ta",
+            "Kannada": "kn",
+            "Malayalam": "ml",
+            "Marathi": "mr",
+            "Bengali": "bn",
+            "Gujarati": "gu",
+            "Urdu": "ur",
+            "Spanish": "es",
+            "French": "fr",
+            "German": "de",
+            "Arabic": "ar",
+            "Chinese (Simplified)": "zh-CN",
+            "Japanese": "ja",
+        }
+        lang_code = gtts_codes.get(language_name, "en")
+        tts = gTTS(text=clean, lang=lang_code, slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        return fp.getvalue()
+    except Exception as error:
+        logger.warning("gTTS speech generation failed for %s: %s", language_name, error)
+        return None
+
+
 def render_speech_controls(
     text: str,
     language_code: str,
@@ -656,13 +698,25 @@ def render_answer_tools(message: dict, message_index: int, model: ChatModel) -> 
             st.markdown(active_text)
 
         clean_lang_id = active_language.lower().replace(" ", "_")
-        render_speech_controls(
-            active_text,
-            LANGUAGES.get(active_language, "en-US"),
-            active_language,
-            f"answer-{message_index}-{clean_lang_id}",
-            autoplay=False,
-        )
+        audio_state_key = f"play_audio_{message_index}_{clean_lang_id}"
+
+        btn_col, _ = st.columns([2, 5])
+        if btn_col.button("🔊 Read", key=f"read_btn_{message_index}_{clean_lang_id}"):
+            st.session_state[audio_state_key] = True
+
+        if st.session_state.get(audio_state_key):
+            with st.spinner("Generating clear speech…"):
+                audio_bytes = generate_speech_audio(active_text, active_language)
+            if audio_bytes:
+                st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+            else:
+                render_speech_controls(
+                    active_text,
+                    LANGUAGES.get(active_language, "en-US"),
+                    active_language,
+                    f"answer-{message_index}-{clean_lang_id}",
+                    autoplay=True,
+                )
 
 
 def build_or_load_collection(
