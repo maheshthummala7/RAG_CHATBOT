@@ -45,6 +45,11 @@ jobs:
             echo "Navigating to: $TARGET_DIR"
             cd "$TARGET_DIR"
 
+            # Pull latest changes first so deploy.sh is guaranteed to exist
+            echo "Pulling latest changes from GitHub..."
+            git fetch origin master
+            git reset --hard origin/master
+
             # Ensure deploy.sh is executable and run it
             chmod +x deploy.sh
             ./deploy.sh
