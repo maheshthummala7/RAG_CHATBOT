@@ -409,8 +409,8 @@ def render_speech_controls(
         <head><meta charset="utf-8"></head>
         <body>
         <div class="speech-controls">
-            <button id="play-{control_id}" onclick="speakText()">Read</button>
-            <button class="stop" onclick="stopSpeaking()">Stop</button>
+            <button id="play-{control_id}" onclick="speakText()">🔊 Speak</button>
+            <button class="stop" onclick="stopSpeaking()">⏹ Stop</button>
         </div>
         <script>
             const speechText = {safe_text};
@@ -421,8 +421,17 @@ def render_speech_controls(
             const shouldAutoplay = {safe_autoplay};
             const playBtn = document.getElementById("play-" + controlId);
             let currentAudio = null;
+            let keepAliveTimer = null;
+
+            function clearKeepAlive() {{
+                if (keepAliveTimer) {{
+                    clearInterval(keepAliveTimer);
+                    keepAliveTimer = null;
+                }}
+            }}
 
             function stopSpeaking() {{
+                clearKeepAlive();
                 if (currentAudio) {{
                     try {{
                         currentAudio.pause();
@@ -439,7 +448,7 @@ def render_speech_controls(
                         window.top.speechSynthesis.cancel();
                     }}
                 }} catch (e) {{}}
-                if (playBtn) playBtn.innerHTML = "Read";
+                if (playBtn) playBtn.innerHTML = "🔊 Speak";
             }}
 
             function stopAllGlobalAudio() {{
@@ -485,7 +494,7 @@ def render_speech_controls(
                 try {{
                     let synth = (window.top && window.top.speechSynthesis) || window.speechSynthesis;
                     if (!synth) {{
-                        if (playBtn) playBtn.innerHTML = "Read";
+                        if (playBtn) playBtn.innerHTML = "🔊 Speak";
                         return;
                     }}
                     let clean = speechText
@@ -495,21 +504,58 @@ def render_speech_controls(
                         .replace(/\\s+/g, ' ')
                         .trim();
                     if (!clean) {{
-                        if (playBtn) playBtn.innerHTML = "Read";
+                        if (playBtn) playBtn.innerHTML = "🔊 Speak";
                         return;
                     }}
+
+                    synth.cancel();
+
                     const utterance = new SpeechSynthesisUtterance(clean);
                     utterance.lang = speechLanguage || "en-US";
                     utterance.rate = 0.95;
+
+                    let voices = synth.getVoices() || [];
+                    if (voices.length > 0) {{
+                        let targetLang = (speechLanguage || "en-US").toLowerCase();
+                        let exactMatch = voices.find(function(v) {{
+                            let vl = (v.lang || "").toLowerCase().replace('_', '-');
+                            return vl === targetLang;
+                        }});
+                        if (!exactMatch) {{
+                            let prefix = targetLang.split('-')[0];
+                            exactMatch = voices.find(function(v) {{
+                                return (v.lang || "").toLowerCase().startsWith(prefix);
+                            }});
+                        }}
+                        if (exactMatch) {{
+                            utterance.voice = exactMatch;
+                        }}
+                    }}
+
+                    clearKeepAlive();
+                    keepAliveTimer = setInterval(function() {{
+                        if (synth && synth.speaking) {{
+                            synth.pause();
+                            synth.resume();
+                        }} else {{
+                            clearKeepAlive();
+                        }}
+                    }}, 10000);
+
                     utterance.onend = function() {{
-                        if (playBtn) playBtn.innerHTML = "Read";
+                        clearKeepAlive();
+                        if (playBtn) playBtn.innerHTML = "🔊 Speak";
                     }};
                     utterance.onerror = function() {{
-                        if (playBtn) playBtn.innerHTML = "Read";
+                        clearKeepAlive();
+                        if (playBtn) playBtn.innerHTML = "🔊 Speak";
                     }};
+
+                    if (playBtn) playBtn.innerHTML = "🔊 Speaking...";
                     synth.speak(utterance);
                 }} catch (e) {{
-                    if (playBtn) playBtn.innerHTML = "Read";
+                    clearKeepAlive();
+                    if (playBtn) playBtn.innerHTML = "🔊 Speak";
                 }}
             }}
 
@@ -517,9 +563,8 @@ def render_speech_controls(
                 stopAllGlobalAudio();
                 stopSpeaking();
 
-                if (playBtn) playBtn.innerHTML = "Reading...";
-
                 if (audioB64 && audioB64.length > 50) {{
+                    if (playBtn) playBtn.innerHTML = "🔊 Speaking...";
                     try {{
                         let AudioConstructor = Audio;
                         try {{
@@ -529,7 +574,7 @@ def render_speech_controls(
                         }} catch (e) {{}}
                         currentAudio = new AudioConstructor("data:audio/mp3;base64," + audioB64);
                         currentAudio.onended = function() {{
-                            if (playBtn) playBtn.innerHTML = "Read";
+                            if (playBtn) playBtn.innerHTML = "🔊 Speak";
                         }};
                         currentAudio.onerror = function() {{
                             speakWithBrowser();
@@ -642,13 +687,11 @@ def render_answer_tools(message: dict, message_index: int, model: ChatModel) -> 
             st.markdown(active_text)
 
         clean_lang_id = active_language.lower().replace(" ", "_")
-        audio_b64 = generate_speech_audio_b64(active_text, active_language)
         render_speech_controls(
             active_text,
             LANGUAGES.get(active_language, "en-US"),
             active_language,
             f"answer-{message_index}-{clean_lang_id}",
-            audio_b64=audio_b64,
             autoplay=False,
         )
 
