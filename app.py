@@ -1,9 +1,12 @@
+import asyncio
 import audioop
 import base64
+import concurrent.futures
 import html
 import io
 import json
 import logging
+import re
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
@@ -346,14 +349,39 @@ def render_sources(sources: list[dict]) -> None:
                 st.divider()
 
 
+NEURAL_VOICES = {
+    "English": "en-US-JennyNeural",
+    "Hindi": "hi-IN-SwaraNeural",
+    "Telugu": "te-IN-ShrutiNeural",
+    "Tamil": "ta-IN-PallaviNeural",
+    "Kannada": "kn-IN-SapnaNeural",
+    "Malayalam": "ml-IN-SobhanaNeural",
+    "Marathi": "mr-IN-AarohiNeural",
+    "Bengali": "bn-IN-TanishaaNeural",
+    "Gujarati": "gu-IN-DhwaniNeural",
+    "Urdu": "ur-PK-UzmaNeural",
+    "Spanish": "es-ES-ElviraNeural",
+    "French": "fr-FR-DeniseNeural",
+    "German": "de-DE-KatjaNeural",
+    "Arabic": "ar-SA-ZariyahNeural",
+    "Chinese (Simplified)": "zh-CN-XiaoxiaoNeural",
+    "Japanese": "ja-JP-NanamiNeural",
+}
+
+
+async def _synthesize_edge_tts(text: str, voice: str) -> bytes:
+    import edge_tts
+    communicate = edge_tts.Communicate(text, voice)
+    fp = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            fp.write(chunk["data"])
+    return fp.getvalue()
+
+
 @st.cache_data(show_spinner=False)
 def generate_speech_audio_b64(text: str, language_name: str) -> str:
     try:
-        import base64
-        import io
-        import re
-        from gtts import gTTS
-
         clean = re.sub(r"\[\d+\]", "", text)
         clean = re.sub(r"[*#_`~>]", "", clean)
         clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)
@@ -361,31 +389,43 @@ def generate_speech_audio_b64(text: str, language_name: str) -> str:
         if not clean:
             return ""
 
-        gtts_codes = {
-            "English": "en",
-            "Hindi": "hi",
-            "Telugu": "te",
-            "Tamil": "ta",
-            "Kannada": "kn",
-            "Malayalam": "ml",
-            "Marathi": "mr",
-            "Bengali": "bn",
-            "Gujarati": "gu",
-            "Urdu": "ur",
-            "Spanish": "es",
-            "French": "fr",
-            "German": "de",
-            "Arabic": "ar",
-            "Chinese (Simplified)": "zh-CN",
-            "Japanese": "ja",
-        }
-        lang_code = gtts_codes.get(language_name, "en")
-        tts = gTTS(text=clean, lang=lang_code, slow=False)
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        return base64.b64encode(fp.getvalue()).decode("ascii")
-    except Exception as error:
-        logger.warning("gTTS speech generation failed for %s: %s", language_name, error)
+        # 1. High-definition Microsoft Read Aloud Neural Voice (crisp, natural, fluent)
+        voice = NEURAL_VOICES.get(language_name, "en-US-JennyNeural")
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        audio_bytes = pool.submit(asyncio.run, _synthesize_edge_tts(clean, voice)).result(timeout=6)
+                else:
+                    audio_bytes = loop.run_until_complete(_synthesize_edge_tts(clean, voice))
+            except RuntimeError:
+                audio_bytes = asyncio.run(_synthesize_edge_tts(clean, voice))
+
+            if audio_bytes and len(audio_bytes) > 100:
+                return base64.b64encode(audio_bytes).decode("ascii")
+        except Exception as err:
+            logger.warning("Edge Neural TTS failed for %s: %s", language_name, err)
+
+        # 2. Secondary fallback: gTTS
+        try:
+            from gtts import gTTS
+            gtts_codes = {
+                "English": "en", "Hindi": "hi", "Telugu": "te", "Tamil": "ta",
+                "Kannada": "kn", "Malayalam": "ml", "Marathi": "mr", "Bengali": "bn",
+                "Gujarati": "gu", "Urdu": "ur", "Spanish": "es", "French": "fr",
+                "German": "de", "Arabic": "ar", "Chinese (Simplified)": "zh-CN", "Japanese": "ja",
+            }
+            lang_code = gtts_codes.get(language_name, "en")
+            tts = gTTS(text=clean, lang=lang_code, slow=False)
+            fp = io.BytesIO()
+            tts.write_to_fp(fp)
+            return base64.b64encode(fp.getvalue()).decode("ascii")
+        except Exception as error:
+            logger.warning("gTTS fallback failed for %s: %s", language_name, error)
+            return ""
+    except Exception as e:
+        logger.warning("Speech audio generation failed: %s", e)
         return ""
 
 
@@ -687,11 +727,13 @@ def render_answer_tools(message: dict, message_index: int, model: ChatModel) -> 
             st.markdown(active_text)
 
         clean_lang_id = active_language.lower().replace(" ", "_")
+        audio_b64 = generate_speech_audio_b64(active_text, active_language)
         render_speech_controls(
             active_text,
             LANGUAGES.get(active_language, "en-US"),
             active_language,
             f"answer-{message_index}-{clean_lang_id}",
+            audio_b64=audio_b64,
             autoplay=False,
         )
 
